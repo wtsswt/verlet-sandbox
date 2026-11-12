@@ -1,0 +1,1013 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Verlet 沙盒 · 位置级约束求解</title>
+<meta name="description" content="用 Verlet 积分 + 位置级约束投影做的粒子沙盒：互斥粒子、布料、软体、星系，四种模式共用一套循环。">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230a0e14'/%3E%3Cg fill='%234de2c5'%3E%3Ccircle cx='11' cy='11' r='3.4'/%3E%3Ccircle cx='21' cy='14' r='3.4'/%3E%3Ccircle cx='13' cy='21' r='3.4'/%3E%3C/g%3E%3Cg stroke='%234de2c5' stroke-opacity='.55' stroke-width='1.4'%3E%3Cpath d='M11 11 L21 14 L13 21 Z'/%3E%3C/g%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#05060a;
+    --panel:rgba(16,20,27,.78);
+    --panel-solid:#0d1117;
+    --line:rgba(255,255,255,.09);
+    --text:#e6edf3;
+    --muted:#8b98a8;
+    --accent:#4de2c5;
+    --warm:#ffd166;
+    --hot:#ff7b72;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%;margin:0}
+  body{
+    background:var(--bg);color:var(--text);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    overflow:hidden;overscroll-behavior:none;
+  }
+  canvas{display:block;position:fixed;inset:0;touch-action:none;cursor:crosshair}
+
+  /* ---------- 标题 ---------- */
+  #scrim{
+    position:fixed;left:0;top:0;width:min(560px,80vw);height:210px;z-index:9;
+    pointer-events:none;
+    background:radial-gradient(ellipse 74% 62% at 16% 8%,rgba(5,6,10,.94) 0%,rgba(5,6,10,.78) 40%,rgba(5,6,10,0) 100%);
+  }
+  header{
+    position:fixed;left:22px;top:20px;z-index:10;pointer-events:none;
+    max-width:min(46vw,420px);
+  }
+  header h1{
+    margin:0;font-size:19px;font-weight:650;letter-spacing:.2px;
+    display:flex;align-items:center;gap:9px;
+  }
+  header h1 .dot{
+    width:7px;height:7px;border-radius:50%;background:var(--accent);
+    box-shadow:0 0 12px var(--accent);
+  }
+  header p{
+    margin:6px 0 0;font-size:12.5px;color:var(--muted);line-height:1.55;
+    max-width:340px;
+  }
+
+  /* ---------- 参数面板 ---------- */
+  #panel{
+    position:fixed;right:18px;top:18px;z-index:12;width:266px;
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:14px;padding:14px 15px 12px;
+    backdrop-filter:blur(18px) saturate(140%);
+    -webkit-backdrop-filter:blur(18px) saturate(140%);
+    box-shadow:0 18px 50px rgba(0,0,0,.5);
+    transition:opacity .18s, transform .18s;
+  }
+  #panel.hidden{opacity:0;transform:translateY(-8px) scale(.98);pointer-events:none}
+  .row{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:11px 0 3px}
+  .row label{font-size:12px;color:var(--muted);letter-spacing:.3px}
+  .row output{font:11.5px/1 var(--mono);color:var(--text);opacity:.9}
+  input[type=range]{
+    -webkit-appearance:none;appearance:none;width:100%;height:18px;background:transparent;margin:0;
+  }
+  input[type=range]::-webkit-slider-runnable-track{
+    height:3px;border-radius:2px;background:rgba(255,255,255,.12);
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none;width:12px;height:12px;border-radius:50%;
+    background:var(--accent);margin-top:-4.5px;box-shadow:0 0 10px rgba(77,226,197,.55);
+    cursor:pointer;
+  }
+  input[type=range]::-moz-range-track{height:3px;border-radius:2px;background:rgba(255,255,255,.12)}
+  input[type=range]::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:var(--accent)}
+
+  .toggles{display:flex;flex-wrap:wrap;gap:6px;margin-top:13px}
+  .tg{
+    font:11.5px/1 -apple-system,sans-serif;color:var(--muted);cursor:pointer;
+    padding:6px 9px;border-radius:7px;border:1px solid var(--line);
+    background:rgba(255,255,255,.02);user-select:none;transition:.15s;
+  }
+  .tg:hover{color:var(--text);border-color:rgba(255,255,255,.2)}
+  .tg.on{color:#04110e;background:var(--accent);border-color:var(--accent);font-weight:600}
+  .tg.dim{opacity:.35;pointer-events:none}
+  #desc{
+    margin:13px 0 0;padding-top:11px;border-top:1px solid var(--line);
+    font-size:11.5px;line-height:1.6;color:var(--muted);
+  }
+  .keys{
+    display:flex;align-items:center;gap:5px;margin-top:10px;flex-wrap:wrap;
+    font-size:10.5px;color:var(--muted);
+  }
+  .keys kbd{margin-left:4px}
+  .keys kbd:first-child{margin-left:0}
+  #panelBtn{
+    position:fixed;right:18px;top:18px;z-index:13;
+    width:36px;height:36px;border-radius:10px;cursor:pointer;
+    border:1px solid var(--line);background:var(--panel);color:var(--text);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    display:none;place-items:center;font-size:15px;
+  }
+  #panelBtn.show{display:grid}
+  #closeP{
+    position:absolute;right:10px;top:8px;width:22px;height:22px;border-radius:6px;
+    border:0;background:transparent;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;
+  }
+  #closeP:hover{color:var(--text);background:rgba(255,255,255,.07)}
+
+  /* ---------- 底部控制 ---------- */
+  #dock{
+    position:fixed;left:50%;bottom:20px;transform:translateX(-50%);z-index:11;
+    display:flex;align-items:center;gap:6px;padding:7px;
+    background:var(--panel);border:1px solid var(--line);border-radius:14px;
+    backdrop-filter:blur(18px) saturate(140%);
+    -webkit-backdrop-filter:blur(18px) saturate(140%);
+    box-shadow:0 18px 50px rgba(0,0,0,.5);
+    max-width:calc(100vw - 24px);overflow-x:auto;scrollbar-width:none;
+  }
+  #dock::-webkit-scrollbar{display:none}
+  .grp{display:flex;gap:3px}
+  .sep{width:1px;height:22px;background:var(--line);margin:0 4px;flex:0 0 auto}
+  .btn{
+    border:0;background:transparent;color:var(--muted);cursor:pointer;
+    padding:7px 11px;border-radius:9px;font-size:12.5px;font-weight:500;
+    white-space:nowrap;transition:.15s;font-family:inherit;
+  }
+  .btn:hover{color:var(--text);background:rgba(255,255,255,.06)}
+  .btn.on{color:#04110e;background:var(--accent);font-weight:650}
+  .btn.icon{font-size:13px;padding:7px 9px}
+
+  /* ---------- 状态 ---------- */
+  #stats{
+    position:fixed;left:16px;bottom:18px;z-index:10;
+    font:11.5px/1.8 var(--mono);color:var(--muted);pointer-events:none;
+    display:grid;grid-template-columns:38px auto;gap:0 12px;
+    padding:7px 12px 6px;border-radius:9px;
+    background:rgba(8,11,16,.62);border:1px solid rgba(255,255,255,.05);
+    backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);
+  }
+  #stats span{opacity:.72}
+  #stats b{color:var(--text);font-weight:500}
+  kbd{
+    font:11px/1 var(--mono);padding:2px 5px;border-radius:4px;
+    border:1px solid var(--line);background:rgba(255,255,255,.05);color:var(--text);
+  }
+  @media (max-width:900px){
+    header{max-width:calc(100vw - 90px);left:18px;top:16px}
+    header p{display:none}
+    #stats{display:none}
+    #panel{width:calc(100vw - 32px);max-width:320px;right:16px;top:16px}
+    #panelBtn{right:16px;top:16px}
+    #dock{
+      left:10px;right:10px;bottom:12px;transform:none;max-width:none;
+      flex-direction:column;gap:7px;padding:9px 8px;overflow:visible;
+    }
+    .sep{display:none}
+    .grp{flex-wrap:wrap;justify-content:center}
+    .btn{padding:7px 10px;font-size:12px}
+  }
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="scrim"></div>
+
+<header>
+  <h1><span class="dot"></span>Verlet 沙盒</h1>
+  <p>每帧都在解一个约束满足问题：粒子互相不重叠、连杆长度不变、不许跑出边界。手感来自第 2 步，不是积分。</p>
+</header>
+
+<button id="panelBtn" title="参数">⚙</button>
+
+<aside id="panel">
+  <button id="closeP" title="收起">×</button>
+  <div class="row"><label>重力</label><output id="oG">1400</output></div>
+  <input type="range" id="sG" min="0" max="3000" step="50" value="1400">
+
+  <div class="row"><label>约束迭代</label><output id="oI">4</output></div>
+  <input type="range" id="sI" min="1" max="8" step="1" value="4">
+
+  <div class="row"><label>阻尼 / 子步</label><output id="oD">0.9950</output></div>
+  <input type="range" id="sD" min="9500" max="9999" step="1" value="9950">
+
+  <div class="row"><label>鼠标半径</label><output id="oR">120</output></div>
+  <input type="range" id="sR" min="40" max="280" step="5" value="120">
+
+  <div class="row"><label>鼠标强度</label><output id="oS">10</output></div>
+  <input type="range" id="sS" min="0" max="60" step="1" value="10">
+
+  <div class="toggles">
+    <div class="tg on" data-t="collisions">粒子碰撞</div>
+    <div class="tg" data-t="trails">轨迹渐隐</div>
+    <div class="tg on" data-t="tear">可撕裂</div>
+  </div>
+  <p id="desc"></p>
+  <div class="keys"><kbd>空格</kbd> 暂停<kbd>R</kbd> 重置<kbd>1</kbd>–<kbd>4</kbd> 切模式</div>
+</aside>
+
+<div id="stats">
+  <span>帧率</span><b id="sFps">–</b>
+  <span>粒子</span><b id="sPts">–</b>
+  <span>约束</span><b id="sLnk">–</b>
+  <span>子步</span><b id="sSub">2×1/120s</b>
+</div>
+
+<nav id="dock">
+  <div class="grp" id="modes">
+    <button class="btn on" data-m="particles">互斥粒子</button>
+    <button class="btn" data-m="cloth">布料</button>
+    <button class="btn" data-m="soft">软体</button>
+    <button class="btn" data-m="galaxy">星系</button>
+  </div>
+  <div class="sep"></div>
+  <div class="grp" id="tools">
+    <button class="btn on" data-tool="push">推开</button>
+    <button class="btn" data-tool="pull">吸引</button>
+    <button class="btn" data-tool="vortex">涡旋</button>
+    <button class="btn" data-tool="grab">拖拽</button>
+    <button class="btn" data-tool="link">连线</button>
+  </div>
+  <div class="sep"></div>
+  <div class="grp">
+    <button class="btn icon" id="bPause" title="暂停">❚❚</button>
+    <button class="btn icon" id="bReset" title="重置">↺</button>
+  </div>
+</nav>
+
+<script>
+"use strict";
+
+/* ============================================================
+   状态
+   ============================================================ */
+const state = {
+  mode: "particles",
+  tool: "push",
+  paused: false,
+  gravity: 1400,
+  iterations: 4,
+  damping: 0.995,     // 每个物理子步的速度保留率
+  mouseRadius: 120,
+  mouseStrength: 10,
+  collisions: true,
+  trails: false,
+  tear: true,
+  rings: [],          // 软体的闭合轮廓
+  grabPoint: null,
+  linkStart: null,
+};
+
+const FIXED_DT = 1 / 120;     // 固定物理步长，绝不用真实帧间隔
+const SUB_PER_FRAME = 2;      // 60Hz 屏幕每帧跑 2 次
+const RESTITUTION = 0.35;     // 边界反弹
+const FRICTION = 0.28;        // 接触点的切向摩擦系数
+const GRAB_SPEED = 7;         // 拖拽时每个子步最多移动多少像素
+const GAL = 768;              // 星系模式的中心引力强度
+
+let pts = [];
+let links = [];
+let DSUB = 0.995;
+
+/* ============================================================
+   画布
+   ============================================================ */
+const canvas = document.getElementById("cv");
+const ctx = canvas.getContext("2d", { alpha: false });
+let W = 0, H = 0, DPR = 1;
+let floorY = 0;             // 地面留出底部控制条的位置
+let bg = document.createElement("canvas");
+let bgc = bg.getContext("2d");
+
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  // 地面高度跟着底部控制条走：手机上控制条换行会变高，写死数值会把颗粒埋进去
+  const dock = document.getElementById("dock");
+  const dockTop = dock ? dock.getBoundingClientRect().top : H - 74;
+  floorY = Math.max(H * 0.45, dockTop - 26);
+  canvas.width = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  makeBackground();
+}
+
+function makeBackground() {
+  bg.width = Math.floor(W * DPR);
+  bg.height = Math.floor(H * DPR);
+  bgc.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  const g = bgc.createRadialGradient(W * 0.5, H * 0.42, 0, W * 0.5, H * 0.42, Math.max(W, H) * 0.72);
+  g.addColorStop(0, "#101722");
+  g.addColorStop(0.55, "#0a0e14");
+  g.addColorStop(1, "#05060a");
+  bgc.fillStyle = g;
+  bgc.fillRect(0, 0, W, H);
+
+  // 细点阵，给尺度感
+  bgc.fillStyle = "rgba(255,255,255,.028)";
+  const step = 26;
+  for (let y = step; y < H; y += step) {
+    for (let x = step; x < W; x += step) {
+      bgc.fillRect(x, y, 1, 1);
+    }
+  }
+
+  // 地面：粒子落在这条线以上，底下留给控制条
+  const fg = bgc.createLinearGradient(0, floorY, 0, H);
+  fg.addColorStop(0, "rgba(0,0,0,.32)");
+  fg.addColorStop(1, "rgba(0,0,0,.55)");
+  bgc.fillStyle = fg;
+  bgc.fillRect(0, floorY, W, H - floorY);
+  bgc.fillStyle = "rgba(255,255,255,.07)";
+  bgc.fillRect(0, floorY, W, 1);
+}
+
+/* ============================================================
+   粒子 / 连杆
+   ============================================================ */
+let _id = 0;
+class Pt {
+  constructor(x, y, r) {
+    this.id = _id++;
+    this.x = x; this.y = y;
+    this.px = x; this.py = y;
+    this.r = r || 6;
+    this.group = -1;      // -1 表示“所有点互相碰撞”；同组不碰撞
+    this.tint = Math.random() < 0.5 ? 0 : 1;
+  }
+}
+// 逆向质量：钉住或拖拽中的点视为无穷大质量
+function im(p) { return (p.pinned || p === state.grabPoint) ? 0 : 1; }
+
+function dist(a, b) { return Math.hypot(b.x - a.x, b.y - a.y); }
+function addLink(a, b, stiff, custom) {
+  links.push({ a, b, rest: dist(a, b), stiff: stiff == null ? 1 : stiff, torn: false, custom: !!custom });
+}
+
+/* ============================================================
+   场景构建
+   ============================================================ */
+function clearScene() {
+  pts = []; links = []; state.rings = [];
+  state.grabPoint = null; state.linkStart = null;
+}
+
+function buildScene() {
+  clearScene();
+  const m = state.mode;
+  if (m === "particles") buildParticles();
+  else if (m === "cloth") buildCloth();
+  else if (m === "soft") buildSoft();
+  else buildGalaxy();
+
+  document.getElementById("sPts").textContent = pts.length;
+  document.getElementById("sLnk").textContent = links.length;
+}
+
+function buildParticles() {
+  // 摊成一床铺满地面的颗粒。位置修正不消耗能量，颗粒之间又没有真正的静摩擦，
+  // 所以堆得再高也会松弛成全宽的一层 —— 与其硬撑成方块，不如把这层做厚。
+  const r = 7, d = r * 2, gap = 1.04;
+  const step = d * gap;
+  const cols = Math.ceil(W / step);
+  const rows = Math.max(8, Math.min(17, Math.round(H / 70)));
+  const y0 = floorY - 22 - (rows - 1) * step * 0.9;
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      const off = (j % 2) * step * 0.5;
+      pts.push(new Pt(
+        step * 0.5 + i * step + off + (Math.random() - 0.5) * 1.2,
+        y0 + j * step * 0.9,
+        r
+      ));
+    }
+  }
+}
+
+function buildCloth() {
+  const s = 16;
+  const cols = Math.max(14, Math.min(36, Math.floor((W * 0.46) / s)));
+  const rows = Math.max(10, Math.min(18, Math.floor((H * 0.3) / s)));
+  const x0 = (W - (cols - 1) * s) / 2;
+  const y0 = H * 0.16;
+  const grid = [];
+  for (let j = 0; j < rows; j++) {
+    grid[j] = [];
+    for (let i = 0; i < cols; i++) {
+      // 一点点抖动，打破完全对称，否则布会笔直挂着不动，像贴图
+      const p = new Pt(x0 + i * s + (Math.random() - 0.5) * 1.2, y0 + j * s, 4);
+      // 只钉住上边两个角和中间：钉满一条边布会被拉成一块平板
+      if (j === 0 && (i === 0 || i === cols - 1 || i === (cols >> 1))) p.pinned = true;
+      grid[j][i] = p;
+      pts.push(p);
+    }
+  }
+  for (let j = 0; j < rows; j++) {
+    for (let i = 0; i < cols; i++) {
+      if (i + 1 < cols) addLink(grid[j][i], grid[j][i + 1], 1);
+      if (j + 1 < rows) addLink(grid[j][i], grid[j + 1][i], 1);
+      // 注意：不加减剪切用的对角约束。两边都连上，每个格子就成了刚性三角形，
+      // 整张布会变成一块硬板，挂在钉子上纹丝不动 —— 这就不叫布了。
+    }
+  }
+}
+
+function buildSoft() {
+  const blobs = [
+    { x: W * 0.34, y: H * 0.40, r: Math.min(112, W * 0.115), n: 48 },
+    { x: W * 0.60, y: H * 0.62, r: Math.min(78, W * 0.082), n: 36 },
+  ];
+  blobs.forEach((b, gi) => {
+    const ring = [];
+    for (let i = 0; i < b.n; i++) {
+      const a = (i / b.n) * Math.PI * 2;
+      const p = new Pt(b.x + Math.cos(a) * b.r, b.y + Math.sin(a) * b.r, 5);
+      p.group = gi;
+      ring.push(p);
+      pts.push(p);
+    }
+    for (let i = 0; i < b.n; i++) {
+      addLink(ring[i], ring[(i + 1) % b.n], 1);        // 周长
+      addLink(ring[i], ring[(i + 2) % b.n], 0.35);     // 抗弯，给出果冻感
+    }
+    state.rings.push({ pts: ring, target: Math.PI * b.r * b.r });
+  });
+}
+
+function buildGalaxy() {
+  const n = 900;
+  const cx = W * 0.5, cy = H * 0.47;
+  const maxR = Math.min(W, H) * 0.44;
+  for (let i = 0; i < n; i++) {
+    const r = 34 + Math.pow(Math.random(), 0.62) * maxR;
+    const a = Math.random() * Math.PI * 2;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    const p = new Pt(x, y, 2.2);
+    // 圆轨道初速：v = sqrt(GAL / r)，方向与半径垂直
+    const v = Math.sqrt(GAL / r) * (0.94 + Math.random() * 0.12);
+    p.px = x + Math.sin(a) * v;
+    p.py = y - Math.cos(a) * v;
+    pts.push(p);
+  }
+}
+
+/* ============================================================
+   物理：积分
+   ============================================================ */
+function integrate(dt) {
+  const g = state.gravity * dt * dt;
+  const gal = state.mode === "galaxy";
+  const cx = W * 0.5, cy = H * 0.47;
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.pinned || p === state.grabPoint) { p.px = p.x; p.py = p.y; continue; }
+
+    const vx = (p.x - p.px) * DSUB;
+    const vy = (p.y - p.py) * DSUB;
+    p.px = p.x; p.py = p.y;
+
+    if (gal) {
+      const dx = cx - p.x, dy = cy - p.y;
+      const d2 = dx * dx + dy * dy + 900;
+      const d = Math.sqrt(d2);
+      const a = GAL / d2;
+      p.x += vx + (dx / d) * a;
+      p.y += vy + (dy / d) * a;
+    } else {
+      p.x += vx;
+      p.y += vy + g;
+    }
+  }
+}
+
+// 拖拽：限速跟随指针。直接赋值等于瞬移，连杆一步就被拉爆，整张网来不及跟着动，
+// 抓住的那颗会当场脱网飞走。px/py 落在上一子步，松手就带着速度甩出去。
+function applyGrab() {
+  const p = state.grabPoint;
+  if (!p) return;
+  const dx = pointer.x - p.x, dy = pointer.y - p.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 0.01) { p.px = p.x; p.py = p.y; return; }
+  const step = Math.min(d, GRAB_SPEED);
+  p.px = p.x; p.py = p.y;
+  p.x += (dx / d) * step;
+  p.y += (dy / d) * step;
+}
+
+/* ============================================================
+   物理：鼠标力场（必须在约束迭代之前）
+   ============================================================ */
+function applyMouse() {
+  if (!pointer.down || state.tool === "grab" || state.tool === "link") return;
+  const R = state.mouseRadius, S = state.mouseStrength;
+  const mx = pointer.x, my = pointer.y, tool = state.tool;
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.pinned) continue;
+    const dx = p.x - mx, dy = p.y - my;
+    const d2 = dx * dx + dy * dy;
+    if (d2 > R * R || d2 < 1) continue;
+    const d = Math.sqrt(d2);
+    const f = (1 - d / R) * S;   // 距离越近推得越狠
+    const ux = dx / d, uy = dy / d;
+    if (tool === "push") { p.x += ux * f; p.y += uy * f; }
+    else if (tool === "pull") { p.x -= ux * f; p.y -= uy * f; }
+    else { p.x += -uy * f; p.y += ux * f; }   // 切向力 → 绕圈
+  }
+}
+
+/* ============================================================
+   物理：约束
+   ============================================================ */
+function solveLinks() {
+  let anyTorn = false;
+  for (let i = 0; i < links.length; i++) {
+    const l = links[i];
+    let dx = l.b.x - l.a.x, dy = l.b.y - l.a.y;
+    let d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 1e-6) { d = 1e-6; dx = 1e-6; }
+
+    const ima = im(l.a), imb = im(l.b);
+    const s = ima + imb;
+    if (s > 0) {
+      const diff = ((d - l.rest) / d) * l.stiff;
+      l.a.x += dx * diff * (ima / s); l.a.y += dy * diff * (ima / s);
+      l.b.x -= dx * diff * (imb / s); l.b.y -= dy * diff * (imb / s);
+    }
+
+    // 撕裂：拽得太用力，约束就断
+    if (state.tear && state.mode === "cloth" && s > 0 && d > l.rest * 2.3) {
+      l.torn = true;
+      anyTorn = true;
+    }
+  }
+  if (anyTorn) links = links.filter(l => !l.torn);
+}
+
+// 面积约束：软体的“里面有多少气”。沿边的外法线推，不能朝质心推 ——
+// 压扁的时候所有点到质心的方向几乎都是水平的，朝质心推只会把它越拉越扁。
+function solveArea() {
+  const rings = state.rings;
+  for (let k = 0; k < rings.length; k++) {
+    const ps = rings[k].pts, n = ps.length;
+    let area = 0, per = 0, cx = 0, cy = 0;
+    for (let i = 0; i < n; i++) {
+      const a = ps[i], b = ps[(i + 1) % n];
+      area += a.x * b.y - b.x * a.y;
+      per += Math.hypot(b.x - a.x, b.y - a.y);
+      cx += a.x; cy += a.y;
+    }
+    area = Math.abs(area) * 0.5;
+    cx /= n; cy /= n;
+    if (per < 1e-6) continue;
+
+    // 边界点整体外移 δ，面积约增加 周长×δ
+    let delta = (rings[k].target - area) / per;
+    delta = Math.max(-3, Math.min(3, delta));
+    if (Math.abs(delta) < 0.004) continue;
+
+    for (let i = 0; i < n; i++) {
+      const a = ps[i], b = ps[(i + 1) % n];
+      const ex = b.x - a.x, ey = b.y - a.y;
+      const len = Math.hypot(ex, ey) || 1e-6;
+      let nx = ey / len, ny = -ex / len;
+      // 法线朝外还是朝内：拿边的中点和质心比一下
+      if (nx * ((a.x + b.x) / 2 - cx) + ny * ((a.y + b.y) / 2 - cy) < 0) { nx = -nx; ny = -ny; }
+      if (im(a) > 0) { a.x += nx * delta * 0.5; a.y += ny * delta * 0.5; }
+      if (im(b) > 0) { b.x += nx * delta * 0.5; b.y += ny * delta * 0.5; }
+    }
+  }
+}
+
+/* ============================================================
+   物理：碰撞（空间网格，O(n²) → 接近 O(n)）
+   ============================================================ */
+let grid = new Map();
+let cellSize = 12;
+
+function buildGrid() {
+  grid.clear();
+  let maxR = 5;
+  for (let i = 0; i < pts.length; i++) if (pts[i].r > maxR) maxR = pts[i].r;
+  cellSize = maxR * 2;
+  const inv = 1 / cellSize;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const key = (Math.floor(p.x * inv) * 73856093) ^ (Math.floor(p.y * inv) * 19349663);
+    const bucket = grid.get(key);
+    if (bucket) bucket.push(p);
+    else grid.set(key, [p]);
+  }
+}
+
+function resolveCollisions() {
+  const inv = 1 / cellSize;
+  const RELAX = 0.62;
+
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const cx = Math.floor(p.x * inv), cy = Math.floor(p.y * inv);
+    for (let oy = -1; oy <= 1; oy++) {
+      for (let ox = -1; ox <= 1; ox++) {
+        const bucket = grid.get(((cx + ox) * 73856093) ^ ((cy + oy) * 19349663));
+        if (!bucket) continue;
+        for (let k = 0; k < bucket.length; k++) {
+          const q = bucket[k];
+          if (q.id <= p.id) continue;                  // 每对只处理一次
+          if (p.group !== -1 && p.group === q.group) continue;
+
+          let dx = q.x - p.x, dy = q.y - p.y;
+          const minD = p.r + q.r;
+          let d2 = dx * dx + dy * dy;
+          if (d2 >= minD * minD) continue;
+
+          const ima = im(p), imb = im(q), s = ima + imb;
+          if (s === 0) continue;
+
+          let d = Math.sqrt(d2);
+          if (d < 1e-6) { dx = 1e-6; dy = 0.5; d = Math.hypot(dx, dy); }
+          const nx = dx / d, ny = dy / d;
+          const overlap = (minD - d) * RELAX;
+          p.x -= nx * overlap * (ima / s); p.y -= ny * overlap * (ima / s);
+          q.x += nx * overlap * (imb / s); q.y += ny * overlap * (imb / s);
+
+          // 摩擦：消掉切向相对速度。不加这一步，圆盘之间没有摩擦，
+          // 堆起来会像液体一样往两边摊，最后一层薄片。
+          const tx = -ny, ty = nx;
+          const vt = ((q.x - q.px) - (p.x - p.px)) * tx + ((q.y - q.py) - (p.y - p.py)) * ty;
+          if (vt !== 0) {
+            const dvx = tx * vt * FRICTION, dvy = ty * vt * FRICTION;
+            p.px -= dvx * (ima / s); p.py -= dvy * (ima / s);
+            q.px += dvx * (imb / s); q.py += dvy * (imb / s);
+          }
+        }
+      }
+    }
+  }
+}
+
+function bounds() {
+  if (state.mode === "galaxy") return;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    if (p.pinned || p === state.grabPoint) continue;
+    const r = p.r;
+    let v;
+    if (p.x < r) { v = p.x - p.px; p.x = r; p.px = p.x + v * RESTITUTION; }
+    else if (p.x > W - r) { v = p.x - p.px; p.x = W - r; p.px = p.x + v * RESTITUTION; }
+    if (p.y < r) { v = p.y - p.py; p.y = r; p.py = p.y + v * RESTITUTION; }
+    else if (p.y > floorY - r) { v = p.y - p.py; p.y = floorY - r; p.py = p.y + v * RESTITUTION; }
+  }
+}
+
+/* ============================================================
+   一步物理
+   ============================================================ */
+function step(dt) {
+  DSUB = state.damping;
+  integrate(dt);
+  applyGrab();
+  applyMouse();
+
+  if (state.collisions && state.mode !== "galaxy") buildGrid();
+
+  for (let k = 0; k < state.iterations; k++) {
+    if (state.collisions && state.mode !== "galaxy") resolveCollisions();
+    if (links.length) solveLinks();
+    if (state.rings.length) solveArea();
+    bounds();
+  }
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+const COLORS = [
+  ["#3fd0b8", "#37b3a0"],   // 慢
+  ["#ffd166", "#e2b856"],   // 中
+  ["#ff7070", "#e06060"],   // 快
+];
+
+function render() {
+  if (state.trails) {
+    ctx.globalAlpha = 0.11;
+    ctx.drawImage(bg, 0, 0, W, H);
+    ctx.globalAlpha = 1;
+  } else {
+    ctx.drawImage(bg, 0, 0, W, H);
+  }
+
+  // 软体：先把闭合轮廓填一层，才看得出来是个“体”而不是一圈项链
+  if (state.rings.length) {
+    for (let k = 0; k < state.rings.length; k++) {
+      const ps = state.rings[k].pts;
+      ctx.beginPath();
+      ctx.moveTo(ps[0].x, ps[0].y);
+      for (let i = 1; i < ps.length; i++) ctx.lineTo(ps[i].x, ps[i].y);
+      ctx.closePath();
+      ctx.fillStyle = "rgba(77,226,197,.06)";
+      ctx.fill();
+    }
+  }
+
+  // 连杆
+  if (links.length) {
+    ctx.beginPath();
+    for (let i = 0; i < links.length; i++) {
+      const l = links[i];
+      if (l.custom) continue;
+      ctx.moveTo(l.a.x, l.a.y);
+      ctx.lineTo(l.b.x, l.b.y);
+    }
+    ctx.strokeStyle = "rgba(124,214,203,.32)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // 用户自己拉的杆，画亮一点
+    ctx.beginPath();
+    for (let i = 0; i < links.length; i++) {
+      const l = links[i];
+      if (!l.custom) continue;
+      ctx.moveTo(l.a.x, l.a.y);
+      ctx.lineTo(l.b.x, l.b.y);
+    }
+    ctx.strokeStyle = "rgba(77,226,197,.75)";
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+  }
+
+  // 粒子按速度分三档批量绘制（每档再分两种深浅，堆在一起才看得出是一颗一颗）
+  const buckets = [[], [], [], [], [], []];
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const sp = Math.hypot(p.x - p.px, p.y - p.py);
+    const t = sp / 5;
+    const spd = t < 0.34 ? 0 : t < 0.8 ? 1 : 2;
+    buckets[spd * 2 + (p.tint || 0)].push(p);
+  }
+  for (let c = 0; c < 6; c++) {
+    const arr = buckets[c];
+    if (!arr.length) continue;
+    ctx.beginPath();
+    for (let i = 0; i < arr.length; i++) {
+      const p = arr[i];
+      ctx.moveTo(p.x + p.r, p.y);
+      ctx.arc(p.x, p.y, p.r, 0, 6.283185307);
+    }
+    ctx.fillStyle = COLORS[c >> 1][c & 1];
+    ctx.fill();
+  }
+
+  // 鼠标力场指示
+  if (pointer.down && (state.tool === "push" || state.tool === "pull" || state.tool === "vortex")) {
+    ctx.beginPath();
+    ctx.arc(pointer.x, pointer.y, state.mouseRadius, 0, 6.283185307);
+    ctx.strokeStyle = "rgba(77,226,197,.22)";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  // 连线工具的预览
+  if (state.linkStart) {
+    const a = state.linkStart;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(pointer.x, pointer.y);
+    ctx.setLineDash([4, 4]);
+    ctx.strokeStyle = "rgba(77,226,197,.8)";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(a.x, a.y, a.r + 4, 0, 6.283185307);
+    ctx.strokeStyle = "rgba(77,226,197,.9)";
+    ctx.stroke();
+  }
+
+  // 拖拽中的点
+  const gp = state.grabPoint;
+  if (gp) {
+    ctx.beginPath();
+    ctx.arc(gp.x, gp.y, gp.r + 6, 0, 6.283185307);
+    ctx.strokeStyle = "rgba(255,209,102,.85)";
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+  }
+}
+
+/* ============================================================
+   主循环
+   ============================================================ */
+let lastT = performance.now();
+let acc = 0;
+let fpsAcc = 0, fpsN = 0, fpsT = performance.now();
+
+function loop(t) {
+  requestAnimationFrame(loop);
+  let dt = (t - lastT) / 1000;
+  lastT = t;
+  if (!(dt > 0)) dt = 0;
+  if (dt > 0.05) dt = 0.05;          // 标签页切回来别一次补太多
+
+  if (!state.paused) {
+    acc += dt;
+    let guard = 0;
+    while (acc >= FIXED_DT && guard < 8) {
+      step(FIXED_DT);
+      acc -= FIXED_DT;
+      guard++;
+    }
+    if (acc > FIXED_DT * 8) acc = 0;
+  }
+
+  render();
+
+  fpsAcc += dt; fpsN++;
+  if (t - fpsT > 400) {
+    document.getElementById("sFps").textContent = Math.round(fpsN / (fpsAcc || 1));
+    document.getElementById("sPts").textContent = pts.length;
+    document.getElementById("sLnk").textContent = links.length;
+    fpsAcc = 0; fpsN = 0; fpsT = t;
+  }
+}
+
+/* ============================================================
+   指针
+   ============================================================ */
+const pointer = { x: -999, y: -999, down: false };
+
+function toLocal(e) {
+  const r = canvas.getBoundingClientRect();
+  return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function nearest(x, y, maxD) {
+  let best = null, bd = maxD * maxD;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const d2 = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+    if (d2 < bd) { bd = d2; best = p; }
+  }
+  return best;
+}
+
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  const q = toLocal(e);
+  pointer.x = q.x; pointer.y = q.y; pointer.down = true;
+
+  if (state.tool === "grab") {
+    const p = nearest(q.x, q.y, 48);
+    if (p && !p.pinned) state.grabPoint = p;
+  } else if (state.tool === "link") {
+    const p = nearest(q.x, q.y, 48);
+    if (p) state.linkStart = p;
+  }
+});
+
+canvas.addEventListener("pointermove", (e) => {
+  const q = toLocal(e);
+  pointer.x = q.x; pointer.y = q.y;
+});
+
+function release() {
+  pointer.down = false;
+  if (state.tool === "link" && state.linkStart) {
+    const p = nearest(pointer.x, pointer.y, 48);
+    if (p && p !== state.linkStart) addLink(state.linkStart, p, 1, true);
+    state.linkStart = null;
+  }
+  state.grabPoint = null;
+}
+canvas.addEventListener("pointerup", release);
+canvas.addEventListener("pointercancel", release);
+
+/* ============================================================
+   UI
+   ============================================================ */
+const DESC = {
+  particles: "粒子之间按最小间距做位置修正，堆起来就是颗粒堆。碰撞用空间网格，只查邻近 9 格。",
+  cloth: "网格 + 距离约束 = 一张布。换成【拖拽】工具拽住一角往外扯，约束拉过 2.3 倍就断。",
+  soft: "闭合轮廓 + 面积约束。捏下去面积变小，约束把点往外推，松手就弹回来。",
+  galaxy: "中心引力 + 切向初速，轨迹渐隐。旋臂来自不同半径的角速度差，不是画上去的。",
+};
+
+function setMode(m) {
+  state.mode = m;
+  document.querySelectorAll("#modes .btn").forEach(b => b.classList.toggle("on", b.dataset.m === m));
+  document.getElementById("desc").textContent = DESC[m];
+
+  // 每种模式的默认手感
+  const defaults = {
+    particles: { damping: 0.995, gravity: 1400, collisions: true, trails: false },
+    cloth: { damping: 0.996, gravity: 1200, collisions: false, trails: false },
+    soft: { damping: 0.997, gravity: 1400, collisions: true, trails: false },
+    galaxy: { damping: 0.9999, gravity: 0, collisions: false, trails: true },
+  }[m];
+
+  state.damping = defaults.damping;
+  state.gravity = defaults.gravity;
+  state.collisions = defaults.collisions;
+  state.trails = defaults.trails;
+
+  document.getElementById("sG").value = state.gravity;
+  document.getElementById("oG").textContent = state.gravity;
+  document.getElementById("sD").value = Math.round(state.damping * 10000);
+  document.getElementById("oD").textContent = state.damping.toFixed(4);
+  document.querySelectorAll(".tg").forEach(t => {
+    t.classList.toggle("on", !!state[t.dataset.t]);
+    t.classList.toggle("dim", (t.dataset.t === "tear" && m !== "cloth") ||
+                              (t.dataset.t === "collisions" && m === "galaxy"));
+  });
+
+  buildScene();
+}
+
+document.querySelectorAll("#modes .btn").forEach(b => {
+  b.addEventListener("click", () => setMode(b.dataset.m));
+});
+document.querySelectorAll("#tools .btn").forEach(b => {
+  b.addEventListener("click", () => {
+    state.tool = b.dataset.tool;
+    document.querySelectorAll("#tools .btn").forEach(x => x.classList.toggle("on", x === b));
+    if (state.tool !== "grab") state.grabPoint = null;
+    if (state.tool !== "link") state.linkStart = null;
+    canvas.style.cursor = state.tool === "grab" ? "grab" : state.tool === "link" ? "cell" : "crosshair";
+  });
+});
+
+document.querySelectorAll(".tg").forEach(t => {
+  t.addEventListener("click", () => {
+    const k = t.dataset.t;
+    state[k] = !state[k];
+    t.classList.toggle("on", state[k]);
+  });
+});
+
+function bindSlider(id, out, apply, fmt) {
+  const el = document.getElementById(id);
+  const o = document.getElementById(out);
+  const upd = () => {
+    const v = +el.value;
+    apply(v);
+    o.textContent = fmt ? fmt(v) : v;
+  };
+  el.addEventListener("input", upd);
+  upd();
+}
+bindSlider("sG", "oG", v => state.gravity = v);
+bindSlider("sI", "oI", v => state.iterations = v);
+bindSlider("sD", "oD", v => state.damping = v / 10000, v => (v / 10000).toFixed(4));
+bindSlider("sR", "oR", v => state.mouseRadius = v);
+bindSlider("sS", "oS", v => state.mouseStrength = v);
+
+document.getElementById("bPause").addEventListener("click", (e) => {
+  state.paused = !state.paused;
+  e.currentTarget.textContent = state.paused ? "▶" : "❚❚";
+  e.currentTarget.classList.toggle("on", state.paused);
+});
+document.getElementById("bReset").addEventListener("click", buildScene);
+
+const panel = document.getElementById("panel");
+const panelBtn = document.getElementById("panelBtn");
+document.getElementById("closeP").addEventListener("click", () => {
+  panel.classList.add("hidden");
+  panelBtn.classList.add("show");
+});
+panelBtn.addEventListener("click", () => {
+  panel.classList.remove("hidden");
+  panelBtn.classList.remove("show");
+});
+
+window.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (e.code === "Space") { e.preventDefault(); document.getElementById("bPause").click(); }
+  else if (k === "r") buildScene();
+  else if (k >= "1" && k <= "4") setMode(["particles", "cloth", "soft", "galaxy"][+k - 1]);
+});
+
+window.addEventListener("resize", () => {
+  resize();
+  if (state.mode === "galaxy") buildScene();
+});
+
+/* ============================================================
+   启动
+   ============================================================ */
+resize();
+// 窄屏默认收起参数面板，别一进来就盖住画布
+if (window.innerWidth < 900) {
+  panel.classList.add("hidden");
+  panelBtn.classList.add("show");
+}
+// 支持 ?m=particles|cloth|soft|galaxy 直接进入某个模式，方便分享
+const qm = new URLSearchParams(location.search).get("m");
+setMode(["particles", "cloth", "soft", "galaxy"].includes(qm) ? qm : "particles");
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
